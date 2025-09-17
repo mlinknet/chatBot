@@ -3,12 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import pickle, os, re
+import openai
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from openai import OpenAI
 
-# --- OpenAI APIキーは環境変数で設定 ---
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# --- OpenAI APIキーを設定（Render 環境変数） ---
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ===== 定数 =====
 SIMILARITY_THRESHOLD = 0.5
@@ -53,7 +53,7 @@ if not os.path.exists("faq_embeddings.pkl"):
     print("✅ Embeddings を新規生成中...")
     faq_embeddings = []
     for q in faq_questions:
-        emb = client.embeddings.create(input=q, model="text-embedding-3-small").data[0].embedding
+        emb = openai.Embedding.create(input=q, model="text-embedding-3-small")["data"][0]["embedding"]
         faq_embeddings.append(emb)
     with open("faq_embeddings.pkl", "wb") as f:
         pickle.dump(faq_embeddings, f)
@@ -96,14 +96,20 @@ def get_faq_answer(user_question):
     normalized_faq = {normalize_text(k): v for k, v in faq_data.items()}
 
     if normalized_question in normalized_faq:
-        return {"answer": normalized_faq[normalized_question], "candidates": []}
+        return {
+            "answer": normalized_faq[normalized_question],
+            "candidates": []
+        }
 
     # 類似度検索
-    user_emb = client.embeddings.create(input=user_question, model="text-embedding-3-small").data[0].embedding
+    user_emb = openai.Embedding.create(input=user_question, model="text-embedding-3-small")["data"][0]["embedding"]
     similarities = cosine_similarity([user_emb], faq_embeddings)[0]
 
     top_indices = similarities.argsort()[::-1][:3]
-    candidates = [{"question": faq_questions[i], "similarity": float(similarities[i])} for i in top_indices]
+    candidates = [
+        {"question": faq_questions[i], "similarity": float(similarities[i])}
+        for i in top_indices
+    ]
 
     best_index = int(np.argmax(similarities))
     best_score = similarities[best_index]
@@ -121,7 +127,10 @@ def get_faq_answer(user_question):
             "candidates": candidates
         }
 
-    return {"answer": faq_data[faq_questions[best_index]], "candidates": candidates}
+    return {
+        "answer": faq_data[faq_questions[best_index]],
+        "candidates": candidates
+    }
 
 # --- POSTエンドポイント ---
 @app.post("/get_answer")
