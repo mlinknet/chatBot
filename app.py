@@ -7,10 +7,10 @@ import openai
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
-# --- OpenAI APIキーは環境変数で設定 ---
+# OpenAI APIキーは環境変数で設定
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ===== 定数 =====
+# 定数
 SIMILARITY_THRESHOLD = 0.5
 UNKNOWN_LOG_FILE = "unknown_questions.log"
 
@@ -48,31 +48,56 @@ faq_data = {
 
 faq_questions = list(faq_data.keys())
 
-# --- Embeddings生成・保存・読み込み ---
+# Embeddings読み込みまたは生成
 if not os.path.exists("faq_embeddings.pkl"):
-    print("✅ Embeddings を新規生成中...")
     faq_embeddings = []
     for q in faq_questions:
-        response = openai.Embedding.create(input=q, model="text-embedding-3-small")
-        faq_embeddings.append(response["data"][0]["embedding"])
+        emb = openai.Embedding.create(input=q, model="text-embedding-3-small")["data"][0]["embedding"]
+        faq_embeddings.append(emb)
     with open("faq_embeddings.pkl", "wb") as f:
         pickle.dump(faq_embeddings, f)
-    print("✅ Embeddings を保存しました。")
 else:
-    print("✅ Embeddings ファイルを読み込み中...")
     with open("faq_embeddings.pkl", "rb") as f:
         faq_embeddings = pickle.load(f)
 
-# --- テキスト正規化 ---
+# 正規化関数
 def normalize_text(text):
     text = text.lower().strip()
     text = re.sub(r"[？?。．]+$", "", text)
     return text
 
-# --- FastAPI 初期化 ---
+# FAQ検索関数
+def get_faq_answer(user_question):
+    normalized_question = normalize_text(user_question)
+    normalized_faq = {normalize_text(k): v for k, v in faq_data.items()}
+
+    if normalized_question in normalized_faq:
+        return {"answer": normalized_faq[normalized_question], "candidates": []}
+
+    # Embedding作成
+    user_emb = openai.Embedding.create(input=user_question, model="text-embedding-3-small")["data"][0]["embedding"]
+    similarities = cosine_similarity([user_emb], faq_embeddings)[0]
+
+    # 類似度上位3件
+    top_indices = similarities.argsort()[::-1][:3]
+    candidates = [{"question": faq_questions[i], "similarity": float(similarities[i])} for i in top_indices]
+
+    best_index = int(np.argmax(similarities))
+    best_score = similarities[best_index]
+
+    if best_score < SIMILARITY_THRESHOLD:
+        with open(UNKNOWN_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(user_question + "\n")
+        return {
+            "answer": "申し訳ございません。該当する回答が見つかりませんでした。\nお手数ですが、こちらから直接お問い合わせください。",
+            "candidates": candidates
+        }
+
+    return {"answer": faq_data[faq_questions[best_index]], "candidates": candidates}
+
+# FastAPI初期化
 app = FastAPI()
 
-# --- CORS設定 ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -81,66 +106,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- index.html GET ---
+# index.html提供
 @app.get("/")
 def serve_html():
     return FileResponse("index.html")
 
-# --- Pydanticモデル ---
+# Pydanticモデル
 class Question(BaseModel):
     question: str
 
-# --- FAQ検索 ---
-def get_faq_answer(user_question):
-    normalized_question = normalize_text(user_question)
-    normalized_faq = {normalize_text(k): v for k, v in faq_data.items()}
-
-    # 完全一致
-    if normalized_question in normalized_faq:
-        return {
-            "answer": normalized_faq[normalized_question],
-            "candidates": []
-        }
-
-    # Embedding取得
-    user_embedding = openai.Embedding.create(
-        input=user_question,
-        model="text-embedding-3-small"
-    )["data"][0]["embedding"]
-
-    # 類似度計算
-    similarities = cosine_similarity([user_embedding], faq_embeddings)[0]
-
-    # 上位3件候補を作成
-    top_indices = similarities.argsort()[::-1][:3]
-    candidates = [
-        {"question": faq_questions[i], "similarity": float(similarities[i])}
-        for i in top_indices
-    ]
-
-    best_index = int(np.argmax(similarities))
-    best_score = similarities[best_index]
-
-    if best_score < SIMILARITY_THRESHOLD:
-        # 不明な質問をログに保存
-        with open(UNKNOWN_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(user_question + "\n")
-        return {
-            "answer": (
-                "申し訳ございません。該当する回答が見つかりませんでした。\n"
-                "お手数ですが、こちらから直接お問い合わせください。\n"
-                "👉 078-251-3141\n"
-                "👉 https://www.kobe-citc.com/contact/"
-            ),
-            "candidates": candidates
-        }
-
-    return {
-        "answer": faq_data[faq_questions[best_index]],
-        "candidates": candidates
-    }
-
-# --- POSTエンドポイント ---
+# POSTエンドポイント
 @app.post("/get_answer")
 async def get_answer(q: Question):
     return get_faq_answer(q.question)
