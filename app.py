@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
 # --- OpenAI APIキーは環境変数で設定 ---
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ===== 定数 =====
 SIMILARITY_THRESHOLD = 0.5
@@ -53,7 +53,10 @@ if not os.path.exists("faq_embeddings.pkl"):
     print("✅ Embeddings を新規生成中...")
     faq_embeddings = []
     for q in faq_questions:
-        emb = openai.Embedding.create(input=q, model="text-embedding-3-small")["data"][0]["embedding"]
+        emb = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=q
+        )["data"][0]["embedding"]
         faq_embeddings.append(emb)
     with open("faq_embeddings.pkl", "wb") as f:
         pickle.dump(faq_embeddings, f)
@@ -102,9 +105,12 @@ def get_faq_answer(user_question):
         }
 
     # 類似度検索
-    user_emb = openai.Embedding.create(input=user_question, model="text-embedding-3-small")["data"][0]["embedding"]
-    similarities = cosine_similarity([user_emb], faq_embeddings)[0]
+    user_emb = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=user_question
+    )["data"][0]["embedding"]
 
+    similarities = cosine_similarity([user_emb], faq_embeddings)[0]
     top_indices = similarities.argsort()[::-1][:3]
     candidates = [
         {"question": faq_questions[i], "similarity": float(similarities[i])}
