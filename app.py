@@ -7,7 +7,7 @@ import openai
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
-# --- OpenAI APIキーを設定（Render 環境変数） ---
+# --- OpenAI APIキーは環境変数で設定 ---
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ===== 定数 =====
@@ -53,15 +53,21 @@ if not os.path.exists("faq_embeddings.pkl"):
     print("✅ Embeddings を新規生成中...")
     faq_embeddings = []
     for q in faq_questions:
-        emb = openai.Embedding.create(input=q, model="text-embedding-3-small")["data"][0]["embedding"]
-        faq_embeddings.append(emb)
+        response = openai.Embedding.create(input=q, model="text-embedding-3-small")
+        faq_embeddings.append(response["data"][0]["embedding"])
     with open("faq_embeddings.pkl", "wb") as f:
         pickle.dump(faq_embeddings, f)
-    print("✅ Embeddings 保存完了")
+    print("✅ Embeddings を保存しました。")
 else:
+    print("✅ Embeddings ファイルを読み込み中...")
     with open("faq_embeddings.pkl", "rb") as f:
         faq_embeddings = pickle.load(f)
-    print("✅ Embeddings ファイル読み込み完了")
+
+# --- テキスト正規化 ---
+def normalize_text(text):
+    text = text.lower().strip()
+    text = re.sub(r"[？?。．]+$", "", text)
+    return text
 
 # --- FastAPI 初期化 ---
 app = FastAPI()
@@ -84,27 +90,28 @@ def serve_html():
 class Question(BaseModel):
     question: str
 
-# --- 正規化関数 ---
-def normalize_text(text):
-    text = text.lower().strip()
-    text = re.sub(r"[？?。．]+$", "", text)
-    return text
-
-# --- FAQ検索関数 ---
+# --- FAQ検索 ---
 def get_faq_answer(user_question):
     normalized_question = normalize_text(user_question)
     normalized_faq = {normalize_text(k): v for k, v in faq_data.items()}
 
+    # 完全一致
     if normalized_question in normalized_faq:
         return {
             "answer": normalized_faq[normalized_question],
             "candidates": []
         }
 
-    # 類似度検索
-    user_emb = openai.Embedding.create(input=user_question, model="text-embedding-3-small")["data"][0]["embedding"]
-    similarities = cosine_similarity([user_emb], faq_embeddings)[0]
+    # Embedding取得
+    user_embedding = openai.Embedding.create(
+        input=user_question,
+        model="text-embedding-3-small"
+    )["data"][0]["embedding"]
 
+    # 類似度計算
+    similarities = cosine_similarity([user_embedding], faq_embeddings)[0]
+
+    # 上位3件候補を作成
     top_indices = similarities.argsort()[::-1][:3]
     candidates = [
         {"question": faq_questions[i], "similarity": float(similarities[i])}
@@ -115,6 +122,7 @@ def get_faq_answer(user_question):
     best_score = similarities[best_index]
 
     if best_score < SIMILARITY_THRESHOLD:
+        # 不明な質問をログに保存
         with open(UNKNOWN_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(user_question + "\n")
         return {
